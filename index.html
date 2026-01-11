@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>Metronome: Universal</title>
+    <title>Metronome PWA Sound Fix</title>
     <style>
         :root {
             --bg: #050505;
@@ -22,7 +22,6 @@
             display: flex; flex-direction: column; 
             height: 100dvh; 
             overflow: hidden;
-            /* Kluczowe dla PWA i Desktopu */
             touch-action: none; 
             user-select: none; -webkit-user-select: none;
             -webkit-tap-highlight-color: transparent;
@@ -84,13 +83,12 @@
         }
         #reset-record-btn:active { color: #fff; }
 
-        /* Obszar interaktywny (Cały środek ekranu) */
+        /* Obszar interaktywny */
         #interactive-area {
             flex-grow: 1; display: flex; flex-direction: column;
             position: relative; overflow: hidden;
             cursor: pointer;
         }
-        /* Efekt wizualny kliknięcia */
         #interactive-area.active-tap { background: #1a1a1a; }
 
         #viz-wrapper { position: relative; width: 100%; height: 140px; pointer-events: none; }
@@ -156,7 +154,9 @@
 </head>
 <body>
 
-    <!-- Ostrzeżenia -->
+    <!-- Dummy Audio dla odblokowania iOS -->
+    <audio id="dummy-audio" src="data:audio/mp3;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA//////////////////////////////////////////////////////////////////8AAABhTEFNRTMuMTAwA8MAAAAAAAAAABQgJAUHAAABAAAAAnEHQbORAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA///////////uQxAAACxBbgAAAEAAAA0gAAABAAABpAAAACAAADSAAAAE/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////wgAAAAA==" style="display:none;" loop></audio>
+
     <div id="ios-mute-warning" class="system-warning">
         <span>Wyłącz przełącznik wyciszenia (z boku)!</span>
         <button class="close-warn" onclick="document.getElementById('ios-mute-warning').style.display='none'">✕</button>
@@ -167,7 +167,6 @@
         <button class="close-warn" onclick="document.getElementById('mic-error-warning').style.display='none'">✕</button>
     </div>
 
-    <!-- Statystyki -->
     <div class="stats-container">
         <div class="stat-item" id="box-target">
             <span id="s-target" class="stat-val">667</span>
@@ -192,18 +191,16 @@
         </div>
     </div>
 
-    <!-- Główny obszar interaktywny -->
     <div id="interactive-area">
         <div id="viz-wrapper">
             <canvas id="game-canvas"></canvas>
         </div>
         <div id="hit-zone">
             <div id="main-feedback">START</div>
-            <div id="sub-feedback">Kliknij ekran / Spacja</div>
+            <div id="sub-feedback">Kliknij ekran by zacząć</div>
         </div>
     </div>
 
-    <!-- Mikrofon -->
     <div class="mic-panel">
         <div class="mic-row">
             <button id="mic-toggle" class="mic-btn">Włącz Mic</button>
@@ -220,7 +217,6 @@
         </div>
     </div>
 
-    <!-- Kontrolki -->
     <div class="controls">
         <div class="controls-top">
             <button id="sound-toggle" title="Włącz/Wyłącz Dźwięk">🔊</button>
@@ -245,6 +241,8 @@
     const bpmSlider = document.getElementById('bpm-slider');
     const soundToggle = document.getElementById('sound-toggle');
     const resetRecordBtn = document.getElementById('reset-record-btn');
+    const dummyAudio = document.getElementById('dummy-audio');
+    
     const micToggle = document.getElementById('mic-toggle');
     const micLevelBar = document.getElementById('mic-level-bar');
     const micDeltaBar = document.getElementById('mic-delta-bar');
@@ -253,14 +251,49 @@
     const duckLed = document.getElementById('duck-led');
     const micWarn = document.getElementById('mic-error-warning');
 
-    // Audio Engine
+    // Engine
     let audioCtx = null;
     let isRunning = false;
     let nextNoteTime = 0.0;
     let bpm = 90;
     let isSoundEnabled = true;
 
-    // Mic Engine
+    // --- HARDCORE iOS UNLOCK ---
+    function ensureAudioContext() {
+        if (!audioCtx) {
+            // Bezpieczne tworzenie kontekstu
+            const AudioCtor = window.AudioContext || window.webkitAudioContext;
+            audioCtx = new AudioCtor();
+        }
+        
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+
+        // Trick z HTML5 Audio - wymusza tryb "Playback" w iOS
+        if(dummyAudio.paused) {
+            dummyAudio.play().then(() => {
+                dummyAudio.pause();
+                dummyAudio.currentTime = 0;
+            }).catch(e => {}); 
+        }
+
+        // Web Audio Dummy Sound
+        const buffer = audioCtx.createBuffer(1, 1, 22050);
+        const source = audioCtx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioCtx.destination);
+        source.start(0);
+    }
+
+    // Auto-Resume po powrocie do aplikacji (PWA)
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && audioCtx && audioCtx.state === 'suspended') {
+            ensureAudioContext();
+        }
+    });
+
+    // Mic Variables
     let micStream = null;
     let analyser = null;
     let dataArray = null;
@@ -268,7 +301,6 @@
     let micThreshold = 0.3; 
     let lastVol = 0;
     
-    // Logic
     let ignoreInputUntil = 0;
     let lastRealInteractionTime = 0;
     
@@ -283,198 +315,9 @@
     let last10Errors = [];
     let bestSessionAvg10 = Infinity; 
 
-    // --- UNIVERSAL AUDIO UNLOCK ---
-    function ensureAudioContext() {
-        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        if (audioCtx.state === 'suspended') {
-            audioCtx.resume().catch(e => console.log(e));
-        }
-        // Dummy play to wake up iOS audio thread
-        const buffer = audioCtx.createBuffer(1, 1, 22050);
-        const source = audioCtx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(audioCtx.destination);
-        source.start(0);
-    }
+    // Init na pierwszym kliku
+    function initAudio() { ensureAudioContext(); }
 
-    // --- UNIVERSAL INPUT HANDLER (MAC + iOS + PWA) ---
-    function handleUniversalInput(e, fromMic = false) {
-        // Jeśli to dotyk, preventDefault blokuje zoom i scroll
-        if (e && e.type === 'touchstart') e.preventDefault();
-        
-        // Zawsze budzimy audio
-        ensureAudioContext();
-
-        const now = Date.now();
-
-        // 1. ODRZUCANIE DUBLI (Hybrydowy Input)
-        // Jeśli przyszło zdarzenie (np. mousedown) < 50ms po poprzednim (np. touchstart), ignoruj.
-        // To naprawia problem "podwójnego kliknięcia" na urządzeniach hybrydowych.
-        if (!fromMic && (now - lastRealInteractionTime < 50)) return;
-        if (!fromMic) lastRealInteractionTime = now;
-
-        // 2. BLOKADA STARTOWA
-        if (now < ignoreInputUntil) return;
-
-        // 3. EFEKT WIZUALNY
-        if (!fromMic) {
-            interactiveArea.classList.add('active-tap');
-            setTimeout(() => interactiveArea.classList.remove('active-tap'), 50);
-        }
-
-        // 4. LOGIKA GRY
-        if (!isRunning) {
-            // Tylko manual startuje grę
-            if (!fromMic) startGame(false); 
-        } else {
-            // Debounce dla mikrofonu (żeby echo nie zaliczyło 2 uderzeń)
-            if (fromMic && (now - lastRealInteractionTime < 90)) return;
-            if (fromMic) lastRealInteractionTime = now;
-            
-            processHit();
-        }
-    }
-
-    // --- START / STOP ---
-    function startGame(startedByButton = true) {
-        ensureAudioContext(); 
-        isRunning = true;
-        
-        // Jeśli start z guzika na dole, daj 300ms cooldownu
-        // Jeśli start z ekranu, daj 0ms (użytkownik chce od razu klikać)
-        ignoreInputUntil = Date.now() + (startedByButton ? 300 : 0);
-
-        visualClicks = [];
-        totalErrorSum = 0;
-        clickCount = 0;
-        last10Errors = [];
-        isFirstClick = true;
-        
-        // Reset Zegara (Systemowy)
-        lastClickTimeMs = performance.now();
-        
-        // Reset Metronomu (Audio)
-        if (audioCtx) nextNoteTime = audioCtx.currentTime + 0.1;
-        
-        toggleBtn.innerText = "ZATRZYMAJ"; toggleBtn.style.background = "#ff5252";
-        document.getElementById('main-feedback').innerText = "START";
-        document.getElementById('sub-feedback').innerText = "Wbij rytm...";
-        resetUI();
-        scheduler();
-        gameLoop();
-    }
-
-    function stopGame() {
-        isRunning = false;
-        toggleBtn.innerText = "START"; toggleBtn.style.background = "var(--accent)";
-        document.getElementById('main-feedback').innerText = "KONIEC";
-        document.getElementById('sub-feedback').innerText = "Kliknij by zacząć";
-    }
-
-    // --- LOGIKA GRY (Performance.now) ---
-    function processHit() {
-        const currentTimeMs = performance.now();
-        
-        if (isFirstClick) {
-            lastClickTimeMs = currentTimeMs;
-            isFirstClick = false;
-            document.getElementById('main-feedback').innerText = "JEDZIESZ";
-            document.getElementById('sub-feedback').innerText = "Utrzymaj to";
-            visualClicks.push({ offset: 0, alpha: 0.5, color: '#555', isStart: true });
-            return;
-        }
-
-        const measuredIntervalMs = currentTimeMs - lastClickTimeMs;
-        
-        // Sanity Check: < 100ms to błąd ludzki lub systemowy. Resetujemy punkt odniesienia.
-        if (measuredIntervalMs < 100) {
-            lastClickTimeMs = currentTimeMs; 
-            return; 
-        }
-
-        lastClickTimeMs = currentTimeMs; 
-
-        const targetIntervalMs = (60 / bpm) * 1000;
-        const diffMs = measuredIntervalMs - targetIntervalMs; 
-        const absError = Math.abs(diffMs);
-
-        clickCount++;
-        totalErrorSum += absError;
-        last10Errors.push(absError);
-        if (last10Errors.length > 10) last10Errors.shift();
-
-        // Auto-ukrywanie ostrzeżenia iOS
-        if (clickCount >= 20) {
-            const warn = document.getElementById('ios-mute-warning');
-            if (warn && warn.style.display !== 'none') {
-                warn.style.transition = "opacity 0.5s";
-                warn.style.opacity = '0';
-                setTimeout(() => warn.style.display = 'none', 500);
-            }
-        }
-
-        let currentAvg10 = 0;
-        let isStreakFull = false;
-        if (last10Errors.length === 10) {
-            currentAvg10 = last10Errors.reduce((a,b) => a+b, 0) / 10;
-            isStreakFull = true;
-            if (currentAvg10 < bestSessionAvg10) bestSessionAvg10 = currentAvg10;
-        }
-
-        updateUI(diffMs, absError, targetIntervalMs, currentAvg10, isStreakFull);
-    }
-
-    // --- UI UPDATES ---
-    function updateUI(diffMs, absError, targetIntervalMs, currentAvg10, isStreakFull) {
-        const fb = document.getElementById('main-feedback');
-        const sub = document.getElementById('sub-feedback');
-        let color = '#fff';
-        let text = '';
-
-        if (absError < 15) { text = 'IDEALNIE'; color = 'var(--accent)'; }
-        else if (absError < 40) { text = 'DOBRZE'; color = '#00b0ff'; }
-        else {
-            if (diffMs < 0) { text = 'ZA SZYBKO'; color = 'var(--fast)'; }
-            else { text = 'ZA WOLNO'; color = 'var(--slow)'; }
-        }
-
-        fb.innerText = text;
-        fb.style.color = color;
-        const sign = diffMs > 0 ? '+' : '';
-        sub.innerText = `${sign}${Math.round(diffMs)} ms`;
-
-        document.getElementById('s-avg-total').innerText = Math.round(totalErrorSum / clickCount) + " ms";
-
-        const bestElem = document.getElementById('s-best-streak');
-        if (bestSessionAvg10 === Infinity) {
-            bestElem.innerText = "--";
-            bestElem.style.color = "#fff";
-        } else {
-            bestElem.innerText = Math.round(bestSessionAvg10) + " ms";
-            bestElem.style.color = "var(--gold)";
-        }
-
-        if (isStreakFull) {
-            document.getElementById('s-avg-10').innerText = Math.round(currentAvg10) + " ms";
-        } else {
-            document.getElementById('s-avg-10').innerText = `(${last10Errors.length}/10)`;
-        }
-
-        const avgError = totalErrorSum / clickCount;
-        const deviation = (avgError / targetIntervalMs) * 100;
-        document.getElementById('s-dev').innerText = deviation.toFixed(1) + "%";
-
-        visualClicks.push({ offset: diffMs, alpha: 1.0, color: color });
-    }
-
-    function resetUI() {
-        const placeholder = "--";
-        document.getElementById('s-avg-total').innerText = placeholder;
-        document.getElementById('s-avg-10').innerText = placeholder;
-        document.getElementById('s-dev').innerText = placeholder;
-    }
-
-    // --- MIKROFON ---
     async function toggleMicrophone() {
         if (isMicActive) {
             if (micStream) micStream.getTracks().forEach(track => track.stop());
@@ -551,7 +394,7 @@
         else duckLed.classList.remove('active');
 
         if (delta > effectiveThreshold) {
-            handleUniversalInput(null, true); // fromMic = true
+            handleUniversalInput(null, true); 
             micDeltaBar.style.backgroundColor = '#fff';
             setTimeout(() => micDeltaBar.style.backgroundColor = 'var(--accent)', 50);
         }
@@ -571,9 +414,8 @@
         micThreshLine.style.left = Math.min(100, (micThreshold * 500)) + '%';
     }
 
-    // --- AUDIO LOOP ---
     function playTick(time, isStrong) {
-        if (!isSoundEnabled) return;
+        if (!isSoundEnabled || !audioCtx) return;
 
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
@@ -601,6 +443,9 @@
 
     function scheduler() {
         const secPerBeat = 60.0 / bpm;
+        // Zabezpieczenie przed brakiem audioCtx
+        if (!audioCtx) return; 
+        
         while (nextNoteTime < audioCtx.currentTime + 0.1) {
             playTick(nextNoteTime, clickCount % 4 === 0);
             nextNoteTime += secPerBeat;
@@ -612,6 +457,169 @@
         if (!isRunning) return;
         draw();
         requestAnimationFrame(gameLoop);
+    }
+
+    // --- UNIVERSAL INPUT HANDLER ---
+    function handleUniversalInput(e, fromMic = false) {
+        if (e && e.type === 'touchstart') e.preventDefault();
+        
+        // Próba odblokowania audio przy każdej interakcji
+        ensureAudioContext();
+
+        const now = Date.now();
+
+        // Odrzucanie dubli (Touch vs Mouse)
+        if (!fromMic && (now - lastRealInteractionTime < 50)) return;
+        if (!fromMic) lastRealInteractionTime = now;
+
+        // Blokada Startowa
+        if (now < ignoreInputUntil) return;
+
+        // Wizualny Flash
+        if (!fromMic) {
+            interactiveArea.classList.add('active-tap');
+            setTimeout(() => interactiveArea.classList.remove('active-tap'), 50);
+        }
+
+        if (!isRunning) {
+            if (!fromMic) startGame(false); 
+        } else {
+            // Debounce Mic
+            if (fromMic && (now - lastRealInteractionTime < 90)) return;
+            if (fromMic) lastRealInteractionTime = now;
+            
+            processHit();
+        }
+    }
+
+    function startGame(startedByButton = true) {
+        ensureAudioContext(); 
+        isRunning = true;
+        
+        ignoreInputUntil = Date.now() + (startedByButton ? 300 : 0);
+
+        visualClicks = [];
+        totalErrorSum = 0;
+        clickCount = 0;
+        last10Errors = [];
+        isFirstClick = true;
+        
+        lastClickTimeMs = performance.now();
+        if (audioCtx) nextNoteTime = audioCtx.currentTime + 0.1;
+        
+        toggleBtn.innerText = "ZATRZYMAJ"; toggleBtn.style.background = "#ff5252";
+        document.getElementById('main-feedback').innerText = "START";
+        document.getElementById('sub-feedback').innerText = "Wbij rytm...";
+        resetUI();
+        scheduler();
+        gameLoop();
+    }
+
+    function stopGame() {
+        isRunning = false;
+        toggleBtn.innerText = "START"; toggleBtn.style.background = "var(--accent)";
+        document.getElementById('main-feedback').innerText = "KONIEC";
+        document.getElementById('sub-feedback').innerText = "Kliknij by zacząć";
+    }
+
+    function processHit() {
+        const currentTimeMs = performance.now();
+        
+        if (isFirstClick) {
+            lastClickTimeMs = currentTimeMs;
+            isFirstClick = false;
+            document.getElementById('main-feedback').innerText = "JEDZIESZ";
+            document.getElementById('sub-feedback').innerText = "Utrzymaj to";
+            visualClicks.push({ offset: 0, alpha: 0.5, color: '#555', isStart: true });
+            return;
+        }
+
+        const measuredIntervalMs = currentTimeMs - lastClickTimeMs;
+        
+        // Filter "duchów"
+        if (measuredIntervalMs < 100) {
+            lastClickTimeMs = currentTimeMs; 
+            return; 
+        }
+
+        lastClickTimeMs = currentTimeMs; 
+
+        const targetIntervalMs = (60 / bpm) * 1000;
+        const diffMs = measuredIntervalMs - targetIntervalMs; 
+        const absError = Math.abs(diffMs);
+
+        clickCount++;
+        totalErrorSum += absError;
+        last10Errors.push(absError);
+        if (last10Errors.length > 10) last10Errors.shift();
+
+        if (clickCount >= 20) {
+            const warn = document.getElementById('ios-mute-warning');
+            if (warn && warn.style.display !== 'none') {
+                warn.style.transition = "opacity 0.5s";
+                warn.style.opacity = '0';
+                setTimeout(() => warn.style.display = 'none', 500);
+            }
+        }
+
+        let currentAvg10 = 0;
+        let isStreakFull = false;
+        if (last10Errors.length === 10) {
+            currentAvg10 = last10Errors.reduce((a,b) => a+b, 0) / 10;
+            isStreakFull = true;
+            if (currentAvg10 < bestSessionAvg10) bestSessionAvg10 = currentAvg10;
+        }
+
+        updateUI(diffMs, absError, targetIntervalMs, currentAvg10, isStreakFull);
+    }
+
+    function updateUI(diffMs, absError, targetIntervalMs, currentAvg10, isStreakFull) {
+        const fb = document.getElementById('main-feedback');
+        const sub = document.getElementById('sub-feedback');
+        let color = '#fff';
+        let text = '';
+
+        if (absError < 15) { text = 'IDEALNIE'; color = 'var(--accent)'; }
+        else if (absError < 40) { text = 'DOBRZE'; color = '#00b0ff'; }
+        else {
+            if (diffMs < 0) { text = 'ZA SZYBKO'; color = 'var(--fast)'; }
+            else { text = 'ZA WOLNO'; color = 'var(--slow)'; }
+        }
+
+        fb.innerText = text;
+        fb.style.color = color;
+        const sign = diffMs > 0 ? '+' : '';
+        sub.innerText = `${sign}${Math.round(diffMs)} ms`;
+
+        document.getElementById('s-avg-total').innerText = Math.round(totalErrorSum / clickCount) + " ms";
+
+        const bestElem = document.getElementById('s-best-streak');
+        if (bestSessionAvg10 === Infinity) {
+            bestElem.innerText = "--";
+            bestElem.style.color = "#fff";
+        } else {
+            bestElem.innerText = Math.round(bestSessionAvg10) + " ms";
+            bestElem.style.color = "var(--gold)";
+        }
+
+        if (isStreakFull) {
+            document.getElementById('s-avg-10').innerText = Math.round(currentAvg10) + " ms";
+        } else {
+            document.getElementById('s-avg-10').innerText = `(${last10Errors.length}/10)`;
+        }
+
+        const avgError = totalErrorSum / clickCount;
+        const deviation = (avgError / targetIntervalMs) * 100;
+        document.getElementById('s-dev').innerText = deviation.toFixed(1) + "%";
+
+        visualClicks.push({ offset: diffMs, alpha: 1.0, color: color });
+    }
+
+    function resetUI() {
+        const placeholder = "--";
+        document.getElementById('s-avg-total').innerText = placeholder;
+        document.getElementById('s-avg-10').innerText = placeholder;
+        document.getElementById('s-dev').innerText = placeholder;
     }
 
     function msToX(ms) {
@@ -657,28 +665,7 @@
         ctx.globalAlpha = 1;
     }
 
-    // --- EVENT BINDING ---
-    
-    // 1. Manual Input (Mouse & Touch)
-    // Bindujemy oba, a funkcja handleUniversalInput odfiltruje duplikaty czasowo
-    interactiveArea.addEventListener('touchstart', handleUniversalInput, {passive: false});
-    interactiveArea.addEventListener('mousedown', handleUniversalInput);
-    
-    // Obsługa spacji (bonus dla Mac)
-    window.addEventListener('keydown', (e) => {
-        if (e.code === 'Space') {
-            e.preventDefault();
-            handleUniversalInput();
-        }
-    });
-
-    // 2. Start Button
-    toggleBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (isRunning) stopGame(); else startGame(true);
-    });
-
-    // 3. Sliders & Toggles
+    // --- EVENTS ---
     soundToggle.addEventListener('click', () => {
         isSoundEnabled = !isSoundEnabled;
         soundToggle.innerText = isSoundEnabled ? "🔊" : "🔇";
@@ -693,8 +680,25 @@
     });
 
     micToggle.addEventListener('click', toggleMicrophone);
+    
+    toggleBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (isRunning) stopGame(); else startGame(true);
+    });
 
-    // Slider Logic (prevent firing interactive area)
+    // UNIVERSAL INPUT BINDING
+    interactiveArea.addEventListener('touchstart', handleUniversalInput, {passive: false});
+    interactiveArea.addEventListener('mousedown', handleUniversalInput);
+    
+    // Spacebar Support
+    window.addEventListener('keydown', (e) => {
+        if (e.code === 'Space') {
+            e.preventDefault();
+            handleUniversalInput();
+        }
+    });
+
+    // Slider Logic
     bpmSlider.addEventListener('touchstart', (e) => e.stopPropagation(), {passive: false});
     bpmSlider.addEventListener('mousedown', (e) => e.stopPropagation());
     
@@ -708,7 +712,6 @@
         }
     };
     
-    // Resize
     window.addEventListener('resize', () => {
         canvas.width = document.getElementById('viz-wrapper').offsetWidth;
         canvas.height = 140; 
