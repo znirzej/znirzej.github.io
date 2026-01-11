@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Metronome: Final Stable</title>
+    <style>
+        :root {
+            --bg: #050505;
+            --panel: #111;
+            --accent: #00e676;     
+            --fast: #2979ff;       
+            --slow: #ff9100;       
+            --gold: #ffc400;       
+            --text: #e0e0e0;
+        }
+        body {
+            margin: 0; background: var(--bg); color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            display: flex; flex-direction: column; 
+            height: 100dvh; 
+            overflow: hidden;
+            touch-action: none; 
+            user-select: none; -webkit-user-select: none;
+        }
+
+        /* Ostrzeżenia */
+        .system-warning {
+            display: none; /* Domyślnie ukryte, JS pokaże */
+            position: absolute; top: 0; left: 0; width: 100%; 
+            padding: 12px 15px; font-size: 0.85rem; font-weight: bold; z-index: 1000;
+            box-sizing: border-box; backdrop-filter: blur(10px);
+            justify-content: space-between; align-items: center;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+        }
+        #ios-mute-warning { background: rgba(255, 145, 0, 0.95); color: #000; }
+        #mic-error-warning { background: rgba(211, 47, 47, 0.95); color: #fff; }
+
+        .close-warn {
+            background: rgba(0,0,0,0.15); border: none; color: inherit;
+            width: 30px; height: 30px; border-radius: 50%; 
+            font-size: 1.2rem; cursor: pointer; margin-left: 15px; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+        }
+
+        /* Statystyki */
+        .stats-container {
+            padding: 8px; background: #000; border-bottom: 1px solid #222;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            grid-template-areas: 
+                "target deviation"
+                "avg-total avg-10"
+                "best-streak best-streak";
+            flex-shrink: 0;
+        }
+
+        .stat-item { 
+            background: var(--panel); padding: 6px; border-radius: 6px; 
+            text-align: center; border: 1px solid #222;
+            display: flex; flex-direction: column; justify-content: center;
+            position: relative;
+        }
+
+        #box-target { grid-area: target; }
+        #box-dev { grid-area: deviation; }
+        #box-avg { grid-area: avg-total; }
+        #box-avg10 { grid-area: avg-10; }
+        #box-best { grid-area: best-streak; background: #1a1a1a; border-color: #333; }
+
+        .stat-val { font-size: 1.1rem; font-weight: 800; font-variant-numeric: tabular-nums; color: #fff; line-height: 1.1; }
+        .stat-lbl { font-size: 0.55rem; text-transform: uppercase; opacity: 0.6; margin-top: 2px; }
+        .highlight-gold { color: var(--gold); text-shadow: 0 0 10px rgba(255, 196, 0, 0.3); }
+
+        #reset-record-btn {
+            position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
+            background: transparent; border: none; color: #555; font-size: 1.2rem; 
+            cursor: pointer; padding: 5px; line-height: 1; z-index: 5;
+        }
+        #reset-record-btn:active { color: #fff; }
+
+        /* Obszar interaktywny (Wykres + Strefa) */
+        #interactive-area {
+            flex-grow: 1; display: flex; flex-direction: column;
+            position: relative; overflow: hidden;
+            touch-action: manipulation;
+        }
+
+        /* Wykres */
+        #viz-wrapper { position: relative; background: #0a0a0a; border-bottom: 1px solid #333; flex-shrink: 0; }
+        canvas { display: block; width: 100%; height: 140px; pointer-events: none; }
+
+        /* Strefa klikania */
+        #hit-zone {
+            flex-grow: 1; display: flex; flex-direction: column; 
+            justify-content: center; align-items: center;
+            background: radial-gradient(circle at center, #1c1c1c 0%, #050505 100%);
+            min-height: 100px; 
+            transition: background 0.05s;
+        }
+        /* Efekt kliknięcia */
+        #interactive-area.active-tap #hit-zone { background: #1f1f1f; }
+
+        #main-feedback { font-size: 2.2rem; font-weight: 900; margin: 0; text-align: center; line-height: 1;}
+        #sub-feedback { font-family: monospace; font-size: 1.1rem; opacity: 0.9; font-weight: bold; margin-top: 5px; }
+
+        /* Panel Mikrofonu */
+        .mic-panel {
+            background: #0f0f0f; padding: 10px 15px; border-top: 1px solid #222;
+            display: flex; flex-direction: column; gap: 8px; flex-shrink: 0;
+            z-index: 20;
+        }
+        .mic-row { display: flex; align-items: center; gap: 10px; }
+        .mic-meter { flex-grow: 1; height: 12px; background: #222; border-radius: 6px; position: relative; overflow: hidden; border: 1px solid #333; }
+        
+        .mic-level { height: 100%; background: #444; width: 0%; transition: width 0.05s; }
+        .mic-delta { position: absolute; top:0; left:0; height: 100%; background: var(--accent); width: 0%; opacity: 0.8; transition: width 0.03s; }
+        .mic-thresh { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: #ff5252; z-index: 5; }
+        
+        .mic-btn { 
+            background: #333; border: none; color: #fff; padding: 8px 12px; border-radius: 6px; font-size: 0.85rem; text-transform: uppercase; font-weight: bold;
+        }
+        .mic-btn.active { background: #ff5252; }
+        .duck-indicator { width: 10px; height: 10px; border-radius: 50%; background: #333; margin-left: auto; }
+        .duck-indicator.active { background: #ff9100; box-shadow: 0 0 5px #ff9100; }
+
+        /* Kontrolki */
+        .controls { 
+            padding: 10px 15px; 
+            padding-bottom: calc(15px + env(safe-area-inset-bottom)); 
+            background: var(--panel); 
+            border-top: 1px solid #222; 
+            flex-shrink: 0;
+            z-index: 20;
+        }
+        .controls-top { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; }
+        
+        #sound-toggle {
+            background: #333; border: none; color: #fff; width: 44px; height: 44px; border-radius: 8px; font-size: 1.4rem; cursor: pointer; display: flex; align-items: center; justify-content: center;
+        }
+        #sound-toggle.muted { opacity: 0.5; text-decoration: line-through; }
+
+        .slider-row { display: flex; align-items: center; gap: 15px; flex-grow: 1; }
+        input[type=range] { flex-grow: 1; height: 30px; accent-color: var(--accent); cursor: pointer; touch-action: pan-x; }
+        
+        button#toggle-btn {
+            width: 100%; padding: 16px; border: none; border-radius: 10px;
+            background: var(--accent); color: #000; font-size: 1.2rem; font-weight: 900;
+            text-transform: uppercase; letter-spacing: 1px;
+            box-shadow: 0 4px 15px rgba(0, 230, 118, 0.2);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Ostrzeżenia -->
+    <div id="ios-mute-warning" class="system-warning">
+        <span>Wyłącz przełącznik wyciszenia (z boku)!</span>
+        <button class="close-warn" onclick="document.getElementById('ios-mute-warning').style.display='none'">✕</button>
+    </div>
+    
+    <div id="mic-error-warning" class="system-warning">
+        <span>Błąd mikrofonu: Wymagany HTTPS lub Localhost.</span>
+        <button class="close-warn" onclick="document.getElementById('mic-error-warning').style.display='none'">✕</button>
+    </div>
+
+    <div class="stats-container">
+        <div class="stat-item" id="box-target">
+            <span id="s-target" class="stat-val">667</span>
+            <span class="stat-lbl">Cel (ms)</span>
+        </div>
+        <div class="stat-item" id="box-dev">
+            <span id="s-dev" class="stat-val">--</span>
+            <span class="stat-lbl">Odchylenie %</span>
+        </div>
+        <div class="stat-item" id="box-avg">
+            <span id="s-avg-total" class="stat-val">--</span>
+            <span class="stat-lbl">Śr. Całość</span>
+        </div>
+        <div class="stat-item" id="box-avg10">
+            <span id="s-avg-10" class="stat-val">--</span>
+            <span class="stat-lbl">Śr. Ost. 10</span>
+        </div>
+        <div class="stat-item" id="box-best">
+            <span id="s-best-streak" class="stat-val highlight-gold">--</span>
+            <span class="stat-lbl">Rekord Średniej (10)</span>
+            <button id="reset-record-btn" title="Zeruj rekord">↺</button>
+        </div>
+    </div>
+
+    <!-- Wrapper obejmujący wykres i strefę klikania -->
+    <div id="interactive-area">
+        <div id="viz-wrapper">
+            <canvas id="game-canvas"></canvas>
+        </div>
+
+        <div id="hit-zone">
+            <div id="main-feedback">START</div>
+            <div id="sub-feedback">Kliknij ekran by zacząć</div>
+        </div>
+    </div>
+
+    <div class="mic-panel">
+        <div class="mic-row">
+            <button id="mic-toggle" class="mic-btn">Włącz Mic</button>
+            <div class="mic-meter">
+                <div id="mic-level-bar" class="mic-level"></div>
+                <div id="mic-delta-bar" class="mic-delta"></div>
+                <div id="mic-thresh-line" class="mic-thresh"></div>
+            </div>
+            <div id="duck-led" class="duck-indicator" title="Blokada echa aktywna"></div>
+        </div>
+        <div class="mic-row" style="font-size: 0.8rem; color: #aaa; justify-content: space-between;">
+            <span>Czułość:</span>
+            <input type="range" id="sens-slider" min="1" max="100" value="70">
+        </div>
+    </div>
+
+    <div class="controls">
+        <div class="controls-top">
+            <button id="sound-toggle" title="Włącz/Wyłącz Dźwięk">🔊</button>
+            <div class="slider-row">
+                <span id="bpm-disp" style="font-weight: 800; min-width: 70px;">90 BPM</span>
+                <input type="range" id="bpm-slider" min="40" max="200" value="90">
+            </div>
+        </div>
+        <button id="toggle-btn">START / STOP</button>
+    </div>
+
+<script>
+    // --- WYKRYWANIE iOS ---
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    if(isIOS) document.getElementById('ios-mute-warning').style.display = 'flex';
+
+    const canvas = document.getElementById('game-canvas');
+    const ctx = canvas.getContext('2d');
+    const interactiveArea = document.getElementById('interactive-area');
+    const toggleBtn = document.getElementById('toggle-btn');
+    const bpmSlider = document.getElementById('bpm-slider');
+    const soundToggle = document.getElementById('sound-toggle');
+    const resetRecordBtn = document.getElementById('reset-record-btn');
+    
+    // Mic Elements
+    const micToggle = document.getElementById('mic-toggle');
+    const micLevelBar = document.getElementById('mic-level-bar');
+    const micDeltaBar = document.getElementById('mic-delta-bar');
+    const micThreshLine = document.getElementById('mic-thresh-line');
+    const sensSlider = document.getElementById('sens-slider');
+    const duckLed = document.getElementById('duck-led');
+    const micWarn = document.getElementById('mic-error-warning');
+
+    let audioCtx = null;
+    let isRunning = false;
+    let nextNoteTime = 0.0;
+    let bpm = 90;
+    let isSoundEnabled = true;
+
+    function ensureAudioContext() {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+    }
+
+    let micStream = null;
+    let analyser = null;
+    let dataArray = null;
+    let isMicActive = false;
+    let micThreshold = 0.3; 
+    let lastVol = 0;
+    
+    let ignoreInputUntil = 0;
+    let lastInteractionTime = 0;
+    const MANUAL_DEBOUNCE = 90; 
+    const MIC_DEBOUNCE = 90; 
+
+    let isDucking = false; 
+    let duckTimeout = null;
+
+    let lastClickTime = 0;
+    let isFirstClick = true;
+    let visualClicks = [];
+    let totalErrorSum = 0;
+    let clickCount = 0;     
+    let last10Errors = [];
+    let bestSessionAvg10 = Infinity; 
+
+    function initAudio() {
+        ensureAudioContext();
+    }
+
+    async function toggleMicrophone() {
+        if (isMicActive) {
+            if (micStream) micStream.getTracks().forEach(track => track.stop());
+            isMicActive = false;
+            micToggle.classList.remove('active');
+            micToggle.innerText = "Włącz Mic";
+            micDeltaBar.style.width = '0%';
+            micLevelBar.style.width = '0%';
+        } else {
+            try {
+                ensureAudioContext();
+                micStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: { 
+                        echoCancellation: true, 
+                        noiseSuppression: false, 
+                        autoGainControl: false,
+                        latency: 0
+                    } 
+                });
+                
+                const source = audioCtx.createMediaStreamSource(micStream);
+                const filter = audioCtx.createBiquadFilter();
+                filter.type = 'highpass';
+                filter.frequency.value = 1100; 
+
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 512;
+                analyser.smoothingTimeConstant = 0.1; 
+
+                source.connect(filter);
+                filter.connect(analyser);
+                
+                const bufferLength = analyser.frequencyBinCount;
+                dataArray = new Uint8Array(bufferLength);
+                
+                isMicActive = true;
+                micToggle.classList.add('active');
+                micToggle.innerText = "Wyłącz Mic";
+                micWarn.style.display = 'none'; 
+                
+                lastVol = 0;
+                detectMicHit();
+            } catch (err) {
+                console.error(err);
+                micWarn.style.display = 'flex';
+            }
+        }
+    }
+
+    function detectMicHit() {
+        if (!isMicActive) return;
+
+        analyser.getByteTimeDomainData(dataArray);
+
+        let maxVal = 0;
+        for(let i = 0; i < dataArray.length; i++) {
+            const val = Math.abs(dataArray[i] - 128);
+            if (val > maxVal) maxVal = val;
+        }
+        const currentVol = maxVal / 128;
+
+        let delta = currentVol - lastVol;
+        if (delta < 0) delta = 0;
+
+        if (currentVol > lastVol) lastVol = currentVol;
+        else lastVol *= 0.90;
+
+        micLevelBar.style.width = (currentVol * 100) + '%';
+        micDeltaBar.style.width = (delta * 500) + '%'; 
+
+        const effectiveThreshold = isDucking ? (micThreshold * 3.0) : micThreshold;
+
+        if (isDucking) duckLed.classList.add('active'); 
+        else duckLed.classList.remove('active');
+
+        if (delta > effectiveThreshold) {
+            handleInputSignal(true); 
+            micDeltaBar.style.backgroundColor = '#fff';
+            setTimeout(() => micDeltaBar.style.backgroundColor = 'var(--accent)', 50);
+        }
+        requestAnimationFrame(detectMicHit);
+    }
+
+    sensSlider.addEventListener('input', (e) => {
+        const val = parseInt(e.target.value);
+        const inverted = 101 - val;
+        micThreshold = (inverted * inverted) / 10000; 
+        micThreshLine.style.left = Math.min(100, (micThreshold * 500)) + '%'; 
+    });
+    {
+        const val = 70;
+        const inverted = 101 - val;
+        micThreshold = (inverted * inverted) / 10000;
+        micThreshLine.style.left = Math.min(100, (micThreshold * 500)) + '%';
+    }
+
+    function playTick(time, isStrong) {
+        if (!isSoundEnabled) return;
+
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        
+        osc.frequency.setValueAtTime(isStrong ? 500 : 350, time);
+        osc.type = 'triangle'; 
+
+        gain.gain.setValueAtTime(0.001, time);
+        gain.gain.exponentialRampToValueAtTime(0.8, time + 0.005); 
+        gain.gain.exponentialRampToValueAtTime(0.001, time + 0.08); 
+
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(time);
+        osc.stop(time + 0.1);
+
+        const now = audioCtx.currentTime;
+        const delayMs = (time - now) * 1000;
+        setTimeout(() => {
+            isDucking = true;
+            if (duckTimeout) clearTimeout(duckTimeout);
+            duckTimeout = setTimeout(() => { isDucking = false; }, 60); 
+        }, Math.max(0, delayMs - 10));
+    }
+
+    function scheduler() {
+        const secPerBeat = 60.0 / bpm;
+        while (nextNoteTime < audioCtx.currentTime + 0.1) {
+            playTick(nextNoteTime, clickCount % 4 === 0);
+            nextNoteTime += secPerBeat;
+        }
+        if (isRunning) requestAnimationFrame(scheduler);
+    }
+
+    function gameLoop() {
+        if (!isRunning) return;
+        draw();
+        requestAnimationFrame(gameLoop);
+    }
+
+    // --- INPUT HANDLER ---
+    function handleInputSignal(fromMic = false) {
+        ensureAudioContext(); // Zawsze budź AudioContext
+
+        // Efekt wizualny (Tap Flash) dla manuala
+        if (!fromMic) {
+            interactiveArea.classList.add('active-tap');
+            setTimeout(() => interactiveArea.classList.remove('active-tap'), 50);
+        }
+
+        if (!isRunning) {
+            // Tylko manual startuje grę (nie szum z mikrofonu)
+            if (!fromMic) startGame(false); 
+            return;
+        }
+
+        const now = Date.now();
+        // Sprawdź blokadę po starcie z przycisku
+        if (now < ignoreInputUntil) return;
+
+        const debounceTime = fromMic ? MIC_DEBOUNCE : MANUAL_DEBOUNCE;
+        if (now - lastInteractionTime < debounceTime) return;
+        
+        lastInteractionTime = now;
+        processHit();
+    }
+
+    function startGame(startedByButton = true) {
+        ensureAudioContext(); 
+        isRunning = true;
+        
+        // Cooldown: 500ms dla przycisku, 50ms dla dotyku ekranu
+        ignoreInputUntil = Date.now() + (startedByButton ? 500 : 50);
+
+        visualClicks = [];
+        totalErrorSum = 0;
+        clickCount = 0;
+        last10Errors = [];
+        // bestSessionAvg10 nie resetujemy tutaj
+        isFirstClick = true;
+        
+        // Ustawiamy lastClickTime na "teraz"
+        lastClickTime = audioCtx.currentTime;
+        nextNoteTime = audioCtx.currentTime + 0.1;
+        
+        toggleBtn.innerText = "ZATRZYMAJ"; toggleBtn.style.background = "#ff5252";
+        document.getElementById('main-feedback').innerText = "START";
+        document.getElementById('sub-feedback').innerText = "Wbij rytm...";
+        resetUI();
+        scheduler();
+        gameLoop();
+    }
+
+    function stopGame() {
+        isRunning = false;
+        toggleBtn.innerText = "START"; toggleBtn.style.background = "var(--accent)";
+        document.getElementById('main-feedback').innerText = "KONIEC";
+        document.getElementById('sub-feedback').innerText = "Kliknij by zacząć";
+    }
+
+    function processHit() {
+        const currentTime = audioCtx.currentTime;
+        
+        if (isFirstClick) {
+            lastClickTime = currentTime;
+            isFirstClick = false;
+            document.getElementById('main-feedback').innerText = "JEDZIESZ";
+            document.getElementById('sub-feedback').innerText = "Utrzymaj to";
+            visualClicks.push({ offset: 0, alpha: 0.5, color: '#555', isStart: true });
+            return;
+        }
+
+        const measuredIntervalMs = (currentTime - lastClickTime) * 1000;
+        
+        // --- POPRAWIONA LOGIKA GLITCHA ---
+        // Jeśli odstęp jest nierealnie mały (< 100ms), 
+        // to znaczy, że albo 'duch' albo zegar się zaciął.
+        // Zamiast RETURN (który blokuje grę), robimy RESET PUNKTU ODNIESIENIA.
+        // Traktujemy to uderzenie jako "właściwe teraz".
+        if (measuredIntervalMs < 100) {
+            lastClickTime = currentTime; // Resetujemy stoper do tego momentu
+            return; // Nie liczymy tego do statystyk, ale gra "żyje" dalej
+        }
+
+        lastClickTime = currentTime; 
+
+        const targetIntervalMs = (60 / bpm) * 1000;
+        const diffMs = measuredIntervalMs - targetIntervalMs; 
+        const absError = Math.abs(diffMs);
+
+        clickCount++;
+        totalErrorSum += absError;
+        last10Errors.push(absError);
+        if (last10Errors.length > 10) last10Errors.shift();
+
+        // Auto-ukrywanie ostrzeżenia iOS
+        if (clickCount >= 20) {
+            const warn = document.getElementById('ios-mute-warning');
+            if (warn && warn.style.display !== 'none') {
+                warn.style.transition = "opacity 0.5s";
+                warn.style.opacity = '0';
+                setTimeout(() => warn.style.display = 'none', 500);
+            }
+        }
+
+        let currentAvg10 = 0;
+        let isStreakFull = false;
+        if (last10Errors.length === 10) {
+            currentAvg10 = last10Errors.reduce((a,b) => a+b, 0) / 10;
+            isStreakFull = true;
+            if (currentAvg10 < bestSessionAvg10) bestSessionAvg10 = currentAvg10;
+        }
+
+        updateUI(diffMs, absError, targetIntervalMs, currentAvg10, isStreakFull);
+    }
+
+    function updateUI(diffMs, absError, targetIntervalMs, currentAvg10, isStreakFull) {
+        const fb = document.getElementById('main-feedback');
+        const sub = document.getElementById('sub-feedback');
+        let color = '#fff';
+        let text = '';
+
+        if (absError < 15) { text = 'IDEALNIE'; color = 'var(--accent)'; }
+        else if (absError < 40) { text = 'DOBRZE'; color = '#00b0ff'; }
+        else {
+            if (diffMs < 0) { text = 'ZA SZYBKO'; color = 'var(--fast)'; }
+            else { text = 'ZA WOLNO'; color = 'var(--slow)'; }
+        }
+
+        fb.innerText = text;
+        fb.style.color = color;
+        const sign = diffMs > 0 ? '+' : '';
+        sub.innerText = `${sign}${Math.round(diffMs)} ms`;
+
+        document.getElementById('s-avg-total').innerText = Math.round(totalErrorSum / clickCount) + " ms";
+
+        // Rekord
+        const bestElem = document.getElementById('s-best-streak');
+        if (bestSessionAvg10 === Infinity) {
+            bestElem.innerText = "--";
+            bestElem.style.color = "#fff";
+        } else {
+            bestElem.innerText = Math.round(bestSessionAvg10) + " ms";
+            bestElem.style.color = "var(--gold)";
+        }
+
+        if (isStreakFull) {
+            document.getElementById('s-avg-10').innerText = Math.round(currentAvg10) + " ms";
+        } else {
+            document.getElementById('s-avg-10').innerText = `(${last10Errors.length}/10)`;
+        }
+
+        const avgError = totalErrorSum / clickCount;
+        const deviation = (avgError / targetIntervalMs) * 100;
+        document.getElementById('s-dev').innerText = deviation.toFixed(1) + "%";
+
+        visualClicks.push({ offset: diffMs, alpha: 1.0, color: color });
+    }
+
+    function resetUI() {
+        const placeholder = "--";
+        document.getElementById('s-avg-total').innerText = placeholder;
+        document.getElementById('s-avg-10').innerText = placeholder;
+        document.getElementById('s-dev').innerText = placeholder;
+    }
+
+    function msToX(ms) {
+        const w = canvas.width;
+        const limitMs = (60 / bpm) * 1000 * 0.6; 
+        let r = ms / limitMs;
+        if (r < -1) r = -1; if (r > 1) r = 1;
+        const sign = Math.sign(r);
+        const curved = sign * Math.pow(Math.abs(r), 0.7);
+        return (w/2) + (curved * (w * 0.48));
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const mid = canvas.width / 2;
+        const textY = canvas.height - 15; 
+        
+        const markers = [-100, -50, -25, 25, 50, 100];
+        const limitMs = (60 / bpm) * 1000 * 0.6;
+
+        ctx.textAlign = 'center'; ctx.font = '10px monospace';
+        markers.forEach(val => {
+            if (Math.abs(val) < limitMs) {
+                const x = msToX(val);
+                ctx.strokeStyle = '#222'; ctx.beginPath(); ctx.moveTo(x, 40); ctx.lineTo(x, canvas.height - 30); ctx.stroke();
+                ctx.fillStyle = '#444'; ctx.fillText((val > 0 ? "+" : "") + val, x, textY);
+            }
+        });
+
+        ctx.strokeStyle = '#333'; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(mid, 20); ctx.lineTo(mid, canvas.height - 20); ctx.stroke();
+        ctx.strokeStyle = 'var(--accent)'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(mid, 20); ctx.lineTo(mid, canvas.height - 20); ctx.stroke();
+
+        visualClicks.forEach(c => {
+            if (c.isStart) return;
+            const x = msToX(c.offset);
+            ctx.fillStyle = c.color; ctx.globalAlpha = c.alpha;
+            ctx.beginPath(); ctx.arc(x, canvas.height/2, 14 * c.alpha, 0, Math.PI*2); ctx.fill();
+            c.alpha -= 0.02;
+        });
+        visualClicks = visualClicks.filter(c => c.alpha > 0);
+        ctx.globalAlpha = 1;
+    }
+
+    soundToggle.addEventListener('click', () => {
+        isSoundEnabled = !isSoundEnabled;
+        soundToggle.innerText = isSoundEnabled ? "🔊" : "🔇";
+        soundToggle.classList.toggle('muted', !isSoundEnabled);
+    });
+
+    resetRecordBtn.addEventListener('click', (e) => {
+        e.stopPropagation(); 
+        bestSessionAvg10 = Infinity;
+        document.getElementById('s-best-streak').innerText = "--";
+        document.getElementById('s-best-streak').style.color = "#fff";
+    });
+
+    micToggle.addEventListener('click', toggleMicrophone);
+    
+    toggleBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (isRunning) stopGame(); else startGame(true);
+    });
+
+    // Używamy touchstart dla pewności na iOS + preventDefault
+    const startEvent = 'ontouchstart' in window ? 'touchstart' : 'mousedown';
+    interactiveArea.addEventListener(startEvent, (e) => {
+        e.preventDefault(); 
+        handleInputSignal();
+    }, {passive: false});
+
+    bpmSlider.addEventListener('touchstart', (e) => e.stopPropagation(), {passive: false});
+    bpmSlider.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    bpmSlider.oninput = () => {
+        bpm = parseInt(bpmSlider.value);
+        document.getElementById('bpm-disp').innerText = bpm + " BPM";
+        document.getElementById('s-target').innerText = Math.round((60/bpm)*1000);
+        if (isRunning) {
+            isFirstClick = true; visualClicks = [];
+            document.getElementById('main-feedback').innerText = "ZMIANA";
+        }
+    };
+    
+    window.addEventListener('resize', () => {
+        canvas.width = document.getElementById('viz-wrapper').offsetWidth;
+        canvas.height = 140; 
+        draw();
+    });
+    window.dispatchEvent(new Event('resize'));
+    draw();
+</script>
+</body>
+</html>
