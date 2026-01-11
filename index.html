@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Metronome: Fixed Touch</title>
+    <title>Metronome: Sound Fix</title>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <style>
         :root {
@@ -85,7 +85,6 @@
             flex-grow: 1; display: flex; flex-direction: column;
             position: relative; overflow: hidden;
             background: radial-gradient(circle at center, #1c1c1c 0%, #050505 100%);
-            /* WAŻNE: To pozwala na klikanie */
             cursor: pointer;
         }
         
@@ -94,7 +93,7 @@
         /* Wykres */
         #viz-wrapper { 
             position: relative; width: 100%; height: 140px; 
-            pointer-events: none; /* Kliknięcia przechodzą do interactive-area */
+            pointer-events: none;
         }
         canvas { display: block; width: 100%; height: 100%; }
 
@@ -102,7 +101,6 @@
         #hit-zone {
             flex-grow: 1; display: flex; flex-direction: column; 
             justify-content: center; align-items: center;
-            /* WAŻNE: Napisy nie blokują kliknięć */
             pointer-events: none; 
             min-height: 100px; 
         }
@@ -196,7 +194,6 @@
     </div>
 
     <!-- GŁÓWNA STREFA KLIKANIA -->
-    <!-- Zdarzenia są przypięte do tego ID -->
     <div id="interactive-area">
         <div id="viz-wrapper">
             <canvas id="game-canvas"></canvas>
@@ -235,7 +232,7 @@
     </div>
 
 <script>
-    // iOS check
+    // --- WYKRYWANIE iOS ---
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     if(isIOS) document.getElementById('ios-mute-warning').style.display = 'flex';
 
@@ -262,13 +259,15 @@
     let bpm = 90;
     let isSoundEnabled = true;
 
-    // --- AUDIO SYSTEM ---
+    // --- AGRESYWNE ODBLOKOWANIE AUDIO ---
     function ensureAudioContext() {
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        
         if (audioCtx.state === 'suspended') {
-            audioCtx.resume().catch(e => {});
+            audioCtx.resume();
         }
-        // Dummy buffer to warm up iOS audio path
+        
+        // Cichy buffer, który wymusza na iOS włączenie silnika audio
         const buffer = audioCtx.createBuffer(1, 1, 22050);
         const source = audioCtx.createBufferSource();
         source.buffer = buffer;
@@ -276,10 +275,11 @@
         source.start(0);
     }
 
-    // Global unlock on any touch
-    document.body.addEventListener('touchstart', () => {
-        if(!audioCtx) ensureAudioContext();
-    }, {once:true, passive: true});
+    // --- FIX: GLOBALNY UNLOCKER ---
+    // Każde dotknięcie ekranu próbuje obudzić AudioContext.
+    // Dzięki temu, nawet jeśli start z 'touchstart' zawiedzie, 'touchend' lub kolejne kliknięcie to naprawi.
+    document.addEventListener('touchend', ensureAudioContext, {once: false, passive: true});
+    document.addEventListener('click', ensureAudioContext, {once: false, passive: true});
 
     let micStream = null;
     let analyser = null;
@@ -290,7 +290,9 @@
     
     let ignoreInputUntil = 0;
     let lastRealInteractionTime = 0;
-    
+    const MANUAL_DEBOUNCE = 90; 
+    const MIC_DEBOUNCE = 90; 
+
     let isDucking = false; 
     let duckTimeout = null;
 
@@ -446,7 +448,10 @@
 
     // --- UNIVERSAL INPUT HANDLER ---
     function handleUniversalInput(e, fromMic = false) {
+        // Prevent default na touchstart zapobiega zoomowi, ale NIE BLOKUJEMY audio unlock
         if (e && e.type === 'touchstart') e.preventDefault();
+        
+        // Zawsze próbuj obudzić audio
         ensureAudioContext();
 
         const now = Date.now();
@@ -469,6 +474,7 @@
         } else {
             if (fromMic && (now - lastRealInteractionTime < 90)) return;
             if (fromMic) lastRealInteractionTime = now;
+            
             processHit();
         }
     }
@@ -477,8 +483,7 @@
         ensureAudioContext(); 
         isRunning = true;
         
-        // Cooldown: 500ms button, 0ms touch
-        ignoreInputUntil = Date.now() + (startedByButton ? 500 : 0);
+        ignoreInputUntil = Date.now() + (startedByButton ? 300 : 0);
 
         visualClicks = [];
         totalErrorSum = 0;
@@ -518,8 +523,7 @@
 
         const measuredIntervalMs = currentTimeMs - lastClickTimeMs;
         
-        // Sanity Check: If time is impossible (0-100ms), 
-        // treat it as a "reset" of reference, not an error.
+        // Zabezpieczenie przed duchami (100ms) - po prostu resetujemy stoper
         if (measuredIntervalMs < 100) {
             lastClickTimeMs = currentTimeMs; 
             return; 
@@ -536,7 +540,6 @@
         last10Errors.push(absError);
         if (last10Errors.length > 10) last10Errors.shift();
 
-        // Auto-hide warning
         if (clickCount >= 20) {
             const warn = document.getElementById('ios-mute-warning');
             if (warn && warn.style.display !== 'none') {
@@ -649,6 +652,7 @@
         ctx.globalAlpha = 1;
     }
 
+    // --- EVENTS ---
     soundToggle.addEventListener('click', () => {
         isSoundEnabled = !isSoundEnabled;
         soundToggle.innerText = isSoundEnabled ? "🔊" : "🔇";
@@ -669,8 +673,8 @@
         if (isRunning) stopGame(); else startGame(true);
     });
 
-    // LISTENERS: Support both Touch and Mouse
-    // Using arrow function wrapper ensures correct argument passing
+    // LISTENER FOR HIT ZONE (TOUCH + MOUSE)
+    // Using handleUniversalInput to debounce and manage start logic
     interactiveArea.addEventListener('touchstart', (e) => handleUniversalInput(e, false), {passive: false});
     interactiveArea.addEventListener('mousedown', (e) => handleUniversalInput(e, false));
     
